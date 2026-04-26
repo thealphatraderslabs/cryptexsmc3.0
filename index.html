@@ -2445,9 +2445,19 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
         entryType='FVG';
       } else if(extStruct.lastHL){
         const hl=extStruct.lastHL;
-        entryZone={low:hl.price*0.998,high:hl.price*1.002,mid:hl.price};
-        entryReason=`Last Higher Low (HL) at ${fPrice(hl.price)} — key structural support in the bullish trend. Enter on a bullish reaction here.`;
-        entryType='HL';
+        // DISTANCE GUARD: only use lastHL as entry if it's within 10% of current price.
+        // A Higher Low from a prior bull cycle that's 50-200% above price is not an entry zone
+        // — it's a relic of stale structure. Fall through to MARKET entry instead.
+        const hlDist=Math.abs(hl.price-price)/price;
+        if(hlDist<=0.10){
+          entryZone={low:hl.price*0.998,high:hl.price*1.002,mid:hl.price};
+          entryReason=`Last Higher Low (HL) at ${fPrice(hl.price)} — key structural support in the bullish trend. Enter on a bullish reaction here.`;
+          entryType='HL';
+        } else {
+          entryZone={low:price*0.9985,high:price*1.0015,mid:price};
+          entryReason=`Current market price — nearest structural HL (${fPrice(hl.price)}) is ${(hlDist*100).toFixed(1)}% away and not tradeable as an entry. This is a momentum entry; wait for a confirmed bullish candle close.`;
+          entryType='MARKET';
+        }
       } else {
         entryZone={low:price*0.9985,high:price*1.0015,mid:price};
         entryReason=`Current market price — no OB/FVG/HL nearby for a clean pullback entry. This is a momentum entry; wait for a confirmed bullish candle close.`;
@@ -2472,9 +2482,17 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
         entryType='FVG';
       } else if(extStruct.lastLH){
         const lh=extStruct.lastLH;
-        entryZone={low:lh.price*0.998,high:lh.price*1.002,mid:lh.price};
-        entryReason=`Last Lower High (LH) at ${fPrice(lh.price)} — key structural resistance in the bearish trend. Enter on a bearish reaction here.`;
-        entryType='LH';
+        // DISTANCE GUARD: only use lastLH as entry if it's within 10% of current price.
+        const lhDist=Math.abs(lh.price-price)/price;
+        if(lhDist<=0.10){
+          entryZone={low:lh.price*0.998,high:lh.price*1.002,mid:lh.price};
+          entryReason=`Last Lower High (LH) at ${fPrice(lh.price)} — key structural resistance in the bearish trend. Enter on a bearish reaction here.`;
+          entryType='LH';
+        } else {
+          entryZone={low:price*0.9985,high:price*1.0015,mid:price};
+          entryReason=`Current market price — nearest structural LH (${fPrice(lh.price)}) is ${(lhDist*100).toFixed(1)}% away and not tradeable as an entry. This is a momentum entry; wait for a confirmed bearish candle close.`;
+          entryType='MARKET';
+        }
       } else {
         entryZone={low:price*0.9985,high:price*1.0015,mid:price};
         entryReason=`Current market price — no OB/FVG/LH nearby for a clean pullback entry. This is a momentum entry; wait for a confirmed bearish candle close.`;
@@ -3714,11 +3732,25 @@ function checkHTFBias(candles) {
   const lhCount = lastH.filter(h => h.label === 'LH').length;
   const llCount = lastL.filter(l => l.label === 'LL').length;
 
+  // RECENCY GATE: the most recent confirming swing of each type must be in the
+  // last 30% of the HTF window. An HH from 2 years ago cannot anchor BULLISH bias
+  // if all recent swings are lower highs and lower lows.
+  const recentThreshold = htfCandles.length * 0.7; // idx relative to htfCandles
+  const recentHH = lHigh.slice().reverse().find(h => h.label === 'HH');
+  const recentHL = lLow.slice().reverse().find(l => l.label === 'HL');
+  const recentLH = lHigh.slice().reverse().find(h => h.label === 'LH');
+  const recentLL = lLow.slice().reverse().find(l => l.label === 'LL');
+  const hhIsRecent = recentHH && recentHH.idx >= recentThreshold;
+  const hlIsRecent = recentHL && recentHL.idx >= recentThreshold;
+  const lhIsRecent = recentLH && recentLH.idx >= recentThreshold;
+  const llIsRecent = recentLL && recentLL.idx >= recentThreshold;
+
   let bias = 'RANGING', confidence = 0;
-  if (hhCount >= 1 && hlCount >= 1) {
+  // Both the HH AND the HL must be recent to claim BULLISH
+  if (hhCount >= 1 && hlCount >= 1 && hhIsRecent && hlIsRecent) {
     bias = 'BULLISH';
     confidence = (hhCount + hlCount >= 4) ? 2 : 1; // 2=strong, 1=moderate
-  } else if (llCount >= 1 && lhCount >= 1) {
+  } else if (llCount >= 1 && lhCount >= 1 && llIsRecent && lhIsRecent) {
     bias = 'BEARISH';
     confidence = (llCount + lhCount >= 4) ? 2 : 1;
   }
@@ -3752,6 +3784,22 @@ function checkHTFBias(candles) {
     bias = lastEvent.dir;
     confidence = Math.max(confidence, 1);
   }
+
+  // FINAL OVERRIDE: if the two most recent labeled swings in each category
+  // are BOTH bearish (LL and LH), the market is making lower lows and lower highs
+  // right now — override any bullish bias anchored to older candles.
+  // Symmetric rule applies for bullish override.
+  const veryLastH = lHigh.slice(-2);
+  const veryLastL = lLow.slice(-2);
+  const bothRecentBearish = veryLastH.length >= 2 && veryLastL.length >= 2 &&
+    veryLastH.every(h => h.label === 'LH' || h.label === 'SH') &&
+    veryLastL.every(l => l.label === 'LL' || l.label === 'SL');
+  const bothRecentBullish = veryLastH.length >= 2 && veryLastL.length >= 2 &&
+    veryLastH.every(h => h.label === 'HH' || h.label === 'SH') &&
+    veryLastL.every(l => l.label === 'HL' || l.label === 'SL');
+
+  if (bothRecentBearish && bias === 'BULLISH') { bias = 'BEARISH'; confidence = 1; }
+  if (bothRecentBullish && bias === 'BEARISH') { bias = 'BULLISH'; confidence = 1; }
 
   return {
     bias, confidence, lastEvent,
@@ -3803,12 +3851,16 @@ function checkPriceAtLevel(candles, currentPrice, bias, eqhEql) {
   const PROXIMITY = 0.015; // within 1.5% of OB
 
   // For bullish bias — find unmitigated BULL OBs near price
+  const MAX_OB_DIST = 0.20; // hard cap: OB midpoint must be within 20% of current price
   const relevantOBs = obs.filter(ob => {
     const isBull = ob.type === 'BULL_OB';
     const isBear = ob.type === 'BEAR_OB';
     if (bias === 'BULLISH' && !isBull) return false;
     if (bias === 'BEARISH' && !isBear) return false;
     if (ob.mitigated) return false;
+    // Hard distance cap first — OB midpoint must be within MAX_OB_DIST of price
+    const mid = (ob.high + ob.low) / 2;
+    if (Math.abs(mid - currentPrice) / currentPrice > MAX_OB_DIST) return false;
     // Inside or within PROXIMITY of the OB edge (not midpoint)
     if (ob.inside) return true;
     const nearEdge = bias === 'BULLISH'
