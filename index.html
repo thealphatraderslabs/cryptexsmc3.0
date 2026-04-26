@@ -2624,23 +2624,27 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
 
     const riskPct=Math.abs((entryPrice-slPrice)/entryPrice*100);
 
-    // ── STEP 4: TAKE PROFITS — always real SMC levels, ordered by distance ──
-    // LONG TPs: SMC levels ABOVE current price, ordered nearest → farthest
-    // SHORT TPs: SMC levels BELOW current price, ordered nearest → farthest
-    // Each TP must be a real level, not an RR calculation
+    // ── STEP 4: TAKE PROFITS — real SMC levels, capped by risk-proportional distance ──
+    // TP1 max distance from entry = 5× the SL risk. TP2 max = 10× the SL risk.
+    // This keeps TPs proportional to the actual trade setup on any timeframe.
+    // If no real level exists within the cap, that TP is left null (not shown).
     let tp1=null,tp2=null,tp1R='',tp2R='';
     let tp1Type='',tp2Type='';
 
-    if(isLong){
-      // All SMC levels above entry price, sorted nearest first
-      const tpCandidates=levelsAbove.filter(l=>l.price>entryPrice*1.001);
+    const riskDist=Math.abs(entryPrice-slPrice); // absolute distance from entry to SL
+    const tp1MaxDist=riskDist*5;   // TP1 ceiling: 5R away from entry
+    const tp2MaxDist=riskDist*10;  // TP2 ceiling: 10R away from entry
 
-      // Score and prioritise: liquidity pools (EQH, HH) score higher as magnets for price
+    if(isLong){
+      // All SMC levels above entry price, sorted nearest first, capped at 10R
+      const tpCandidates=levelsAbove
+        .filter(l=>l.price>entryPrice*1.001 && (l.price-entryPrice)<=tp2MaxDist);
+
       const scored=tpCandidates.map(l=>{
         let score=0;
-        if(l.type==='HH'||l.type==='EQH') score+=3;   // Liquidity above = price magnet
-        else if(l.type==='BEAR_OB') score+=2;           // Supply OB = natural TP
-        else if(l.type==='BEAR_FVG') score+=2;          // Imbalance above wants filling
+        if(l.type==='HH'||l.type==='EQH') score+=3;
+        else if(l.type==='BEAR_OB') score+=2;
+        else if(l.type==='BEAR_FVG') score+=2;
         else if(l.type==='LH') score+=1;
         else if(l.type==='FIB') score+=1;
         else if(l.type==='RANGE_HIGH') score+=2;
@@ -2648,42 +2652,47 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
         return {...l, score};
       });
 
-      // TP1: nearest meaningful level above (prefer OB/FVG/EQH over random fib)
-      const tp1Cands=scored.sort((a,b)=>a.price-b.price);
-      if(tp1Cands[0]){
-        tp1=tp1Cands[0].zoneHigh?tp1Cands[0].zoneLow:tp1Cands[0].price; // enter TP just below the zone
-        tp1=tp1Cands[0].price*0.999;
-        tp1R=`${tp1Cands[0].label} at ${fPrice(tp1Cands[0].price)} — ${tp1Cands[0].reason}`;
-        tp1Type=tp1Cands[0].label;
+      // TP1: nearest level within 5R
+      const tp1Pool=scored
+        .filter(l=>(l.price-entryPrice)<=tp1MaxDist)
+        .sort((a,b)=>a.price-b.price);
+      if(tp1Pool[0]){
+        tp1=tp1Pool[0].price*0.999;
+        tp1R=`${tp1Pool[0].label} at ${fPrice(tp1Pool[0].price)} — ${tp1Pool[0].reason}`;
+        tp1Type=tp1Pool[0].label;
       }
 
-      // TP2: next level after TP1, skip anything within 0.5% of TP1
-      const tp2Cands=tp1Cands.filter(l=>l.price>tp1*(1.005));
-      if(tp2Cands[0]){
-        tp2=tp2Cands[0].price*0.999;
-        tp2R=`${tp2Cands[0].label} at ${fPrice(tp2Cands[0].price)} — ${tp2Cands[0].reason}`;
-        tp2Type=tp2Cands[0].label;
+      // TP2: next distinct level beyond TP1, within 10R
+      const tp2Pool=scored
+        .filter(l=>tp1&&l.price>tp1*(1.005) && (l.price-entryPrice)<=tp2MaxDist)
+        .sort((a,b)=>a.price-b.price);
+      if(tp2Pool[0]){
+        tp2=tp2Pool[0].price*0.999;
+        tp2R=`${tp2Pool[0].label} at ${fPrice(tp2Pool[0].price)} — ${tp2Pool[0].reason}`;
+        tp2Type=tp2Pool[0].label;
       }
 
-      // Fallback if no levels found: use closest EQH/HH
-      if(!tp1&&extStruct.lastHH&&extStruct.lastHH.price>entryPrice){
+      // Fallback: nearest HH within 5R
+      if(!tp1&&extStruct.lastHH&&extStruct.lastHH.price>entryPrice&&(extStruct.lastHH.price-entryPrice)<=tp1MaxDist){
         tp1=extStruct.lastHH.price*0.998;
         tp1R=`Last Higher High ${fPrice(extStruct.lastHH.price)} — first liquidity cluster above, buy-stops sitting here`;
         tp1Type='HH';
       }
+      // Final fallback: nearest Fib within 5R
       if(!tp1&&pd){
-        tp1=pd.fibLevels.find(f=>f.price>entryPrice)?.price||entryPrice*(1+riskPct/100*1.5);
-        tp1R=tp1?`Nearest Fibonacci level above — ${fPrice(tp1)}`:'No SMC level found above entry';
-        tp1Type='FIB';
+        const nearFib=pd.fibLevels.find(f=>f.price>entryPrice&&(f.price-entryPrice)<=tp1MaxDist);
+        if(nearFib){ tp1=nearFib.price; tp1R=`Nearest Fibonacci level above — ${fPrice(nearFib.price)}`; tp1Type='FIB'; }
       }
     } else {
-      // SHORT TPs: levels BELOW entry price
-      const tpCandidates=levelsBelow.filter(l=>l.price<entryPrice*0.999);
+      // SHORT TPs: levels BELOW entry price, capped at 10R
+      const tpCandidates=levelsBelow
+        .filter(l=>l.price<entryPrice*0.999 && (entryPrice-l.price)<=tp2MaxDist);
+
       const scored=tpCandidates.map(l=>{
         let score=0;
-        if(l.type==='LL'||l.type==='EQL') score+=3;    // Liquidity below = price magnet
-        else if(l.type==='BULL_OB') score+=2;           // Demand OB = natural TP for shorts
-        else if(l.type==='BULL_FVG') score+=2;          // Imbalance below wants filling
+        if(l.type==='LL'||l.type==='EQL') score+=3;
+        else if(l.type==='BULL_OB') score+=2;
+        else if(l.type==='BULL_FVG') score+=2;
         else if(l.type==='HL') score+=1;
         else if(l.type==='FIB') score+=1;
         else if(l.type==='RANGE_LOW') score+=2;
@@ -2691,28 +2700,36 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
         return {...l, score};
       });
 
-      const tp1Cands=scored.sort((a,b)=>b.price-a.price);
-      if(tp1Cands[0]){
-        tp1=tp1Cands[0].price*1.001;
-        tp1R=`${tp1Cands[0].label} at ${fPrice(tp1Cands[0].price)} — ${tp1Cands[0].reason}`;
-        tp1Type=tp1Cands[0].label;
-      }
-      const tp2Cands=tp1Cands.filter(l=>l.price<tp1*(0.995));
-      if(tp2Cands[0]){
-        tp2=tp2Cands[0].price*1.001;
-        tp2R=`${tp2Cands[0].label} at ${fPrice(tp2Cands[0].price)} — ${tp2Cands[0].reason}`;
-        tp2Type=tp2Cands[0].label;
+      // TP1: nearest level within 5R
+      const tp1Pool=scored
+        .filter(l=>(entryPrice-l.price)<=tp1MaxDist)
+        .sort((a,b)=>b.price-a.price);
+      if(tp1Pool[0]){
+        tp1=tp1Pool[0].price*1.001;
+        tp1R=`${tp1Pool[0].label} at ${fPrice(tp1Pool[0].price)} — ${tp1Pool[0].reason}`;
+        tp1Type=tp1Pool[0].label;
       }
 
-      if(!tp1&&extStruct.lastLL&&extStruct.lastLL.price<entryPrice){
+      // TP2: next distinct level beyond TP1, within 10R
+      const tp2Pool=scored
+        .filter(l=>tp1&&l.price<tp1*(0.995) && (entryPrice-l.price)<=tp2MaxDist)
+        .sort((a,b)=>b.price-a.price);
+      if(tp2Pool[0]){
+        tp2=tp2Pool[0].price*1.001;
+        tp2R=`${tp2Pool[0].label} at ${fPrice(tp2Pool[0].price)} — ${tp2Pool[0].reason}`;
+        tp2Type=tp2Pool[0].label;
+      }
+
+      // Fallback: nearest LL within 5R
+      if(!tp1&&extStruct.lastLL&&extStruct.lastLL.price<entryPrice&&(entryPrice-extStruct.lastLL.price)<=tp1MaxDist){
         tp1=extStruct.lastLL.price*1.002;
         tp1R=`Last Lower Low ${fPrice(extStruct.lastLL.price)} — first liquidity cluster below, sell-stops sitting here`;
         tp1Type='LL';
       }
+      // Final fallback: nearest Fib within 5R
       if(!tp1&&pd){
-        tp1=pd.fibLevels.slice().reverse().find(f=>f.price<entryPrice)?.price||entryPrice*(1-riskPct/100*1.5);
-        tp1R=tp1?`Nearest Fibonacci level below — ${fPrice(tp1)}`:'No SMC level found below entry';
-        tp1Type='FIB';
+        const nearFib=pd.fibLevels.slice().reverse().find(f=>f.price<entryPrice&&(entryPrice-f.price)<=tp1MaxDist);
+        if(nearFib){ tp1=nearFib.price; tp1R=`Nearest Fibonacci level below — ${fPrice(nearFib.price)}`; tp1Type='FIB'; }
       }
     }
 
@@ -3347,7 +3364,7 @@ function renderConfluence(confluence) {
       <div class="tsc-block-price">${fPrice(tp.tp1)}</div>
       ${tp1RR!=='—'?`<span class="tsc-block-rr">${tp1RR}R REWARD</span>`:''}
       <div class="tsc-block-sub" style="margin-top:6px;">${tp.tp1R}<br><span style="color:var(--orange);">→ After TP1 hit: Move SL to breakeven</span></div>
-    </div>`:`<div class="tsc-level-block tp1"><div class="tsc-block-label">🎯 TAKE PROFIT 1</div><div class="tsc-block-sub">No SMC level identified above entry on this timeframe — try a lower TF for more precision</div></div>`;
+    </div>`:`<div class="tsc-level-block tp1"><div class="tsc-block-label">🎯 TAKE PROFIT 1</div><div class="tsc-block-sub" style="color:var(--text-dim);">No SMC level found within 5× the risk distance on this timeframe. Consider a lower timeframe for tighter targets, or trade this as a breakout with a trailing stop.</div></div>`;
 
   const tp2HTML=tp.tp2?`
     <div class="tsc-level-block tp2">
@@ -3355,7 +3372,7 @@ function renderConfluence(confluence) {
       <div class="tsc-block-price">${fPrice(tp.tp2)}</div>
       ${tp2RR!=='—'?`<span class="tsc-block-rr">${tp2RR}R REWARD</span>`:''}
       <div class="tsc-block-sub" style="margin-top:6px;">${tp.tp2R}<br><span style="color:var(--orange);">→ After TP2 hit: Trail SL to TP1 level</span></div>
-    </div>`:`<div class="tsc-level-block tp2"><div class="tsc-block-label">🎯 TAKE PROFIT 2</div><div class="tsc-block-sub">No second SMC level identified — close full position at TP1</div></div>`;
+    </div>`:`<div class="tsc-level-block tp2"><div class="tsc-block-label">🎯 TAKE PROFIT 2</div><div class="tsc-block-sub" style="color:var(--text-dim);">No second SMC level within 10× risk. Close full position at TP1 or trail stop once TP1 is reached.</div></div>`;
 
 
 
