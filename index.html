@@ -2029,19 +2029,23 @@ function detectOrderBlocks(candles, currentPrice) {
 
     // Bullish OB: bearish candle (c.c < c.o) followed by strong bullish impulse
     if(c.c<c.o && next.c>next.o && nextBody>=cBody*1.5){
-      const high=c.h,low=c.l;
+      const high=c.h, low=c.l;
+      // Body boundaries (open/close) — tighter and more actionable than wick extremes
+      const bodyHigh=Math.max(c.o,c.c), bodyLow=Math.min(c.o,c.c);
       const distPct=((currentPrice-((high+low)/2))/currentPrice)*100;
       const futureCandles=candles.slice(i+2);
       const mitigated=futureCandles.some(fc=>fc.l<=high&&fc.h>=low);
-      obs.push({type:'BULL_OB',high,low,idx:i,mitigated,inside:false,distPct,candle:c,volConfirmed});
+      obs.push({type:'BULL_OB',high,low,bodyHigh,bodyLow,idx:i,mitigated,inside:false,distPct,candle:c,volConfirmed});
     }
     // Bearish OB: bullish candle (c.c > c.o) followed by strong bearish impulse
     if(c.c>c.o && next.c<next.o && nextBody>=cBody*1.5){
-      const high=c.h,low=c.l;
+      const high=c.h, low=c.l;
+      // Body boundaries (open/close) — tighter and more actionable than wick extremes
+      const bodyHigh=Math.max(c.o,c.c), bodyLow=Math.min(c.o,c.c);
       const distPct=((currentPrice-((high+low)/2))/currentPrice)*100;
       const futureCandles=candles.slice(i+2);
       const mitigated=futureCandles.some(fc=>fc.l<=high&&fc.h>=low);
-      obs.push({type:'BEAR_OB',high,low,idx:i,mitigated,inside:false,distPct,candle:c,volConfirmed});
+      obs.push({type:'BEAR_OB',high,low,bodyHigh,bodyLow,idx:i,mitigated,inside:false,distPct,candle:c,volConfirmed});
     }
   }
 
@@ -2269,6 +2273,39 @@ function validateLevels(candles, currentPrice, obs, fvgs, eqhEql, pivots) {
 }
 
 /**
+ * obEntryZone: given an OB, returns a tight, tradeable entry zone.
+ *
+ * Priority:
+ *  1. If the OB has body bounds (bodyHigh/bodyLow) AND the body is ≤15% wide,
+ *     use the body. Bodies represent where institutions actually transacted —
+ *     not the wicks.
+ *  2. If the body is still >15% wide (rare on higher TFs), or body data is
+ *     missing, cap the zone to ±7.5% around the OB midpoint so the rendered
+ *     zone is always a meaningful, actionable range.
+ *
+ * The MAX_ENTRY_ZONE_PCT constant (15%) is the absolute ceiling. Any entry
+ * zone wider than this as a % of its own midprice is compressed.
+ */
+function obEntryZone(ob, currentPrice) {
+  const MAX_ENTRY_ZONE_PCT = 0.15; // 15% of mid — zones wider than this are too big to trade
+
+  // Prefer body boundaries when available
+  let zoneLow  = (ob.bodyLow  !== undefined) ? ob.bodyLow  : ob.low;
+  let zoneHigh = (ob.bodyHigh !== undefined) ? ob.bodyHigh : ob.high;
+  const mid    = (zoneLow + zoneHigh) / 2;
+
+  // If the zone width is still above cap, compress symmetrically around mid
+  const width = zoneHigh - zoneLow;
+  if (mid > 0 && width / mid > MAX_ENTRY_ZONE_PCT) {
+    const halfCap = mid * (MAX_ENTRY_ZONE_PCT / 2);
+    zoneLow  = mid - halfCap;
+    zoneHigh = mid + halfCap;
+  }
+
+  return { low: zoneLow, high: zoneHigh, mid: (zoneLow + zoneHigh) / 2 };
+}
+
+/**
  * buildConfluence: synthesise all SMC data into a full professional trade plan
  */
 function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, ticker='', tf='', liveMarkPrice=null) {
@@ -2432,12 +2469,12 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       const nearBullOB=bullOBsNear.sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       const nearBullFVG=[...fvgs].filter(f=>f.type==='BULL_FVG'&&f.fillStatus!=='FILLED'&&f.distPct>-3&&f.distPct<1).sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       if(insideOB){
-        entryZone={low:insideOB.low,high:insideOB.high,mid:(insideOB.low+insideOB.high)/2};
-        entryReason=`Price is currently INSIDE a Bullish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — institutional demand zone active right now`;
+        entryZone=obEntryZone(insideOB,price);
+        entryReason=`Price is currently INSIDE a Bullish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — entry zone tightened to body ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}`;
         entryType='OB_INSIDE';
       } else if(nearBullOB){
-        entryZone={low:nearBullOB.low,high:nearBullOB.high,mid:(nearBullOB.low+nearBullOB.high)/2};
-        entryReason=`Bullish Order Block at ${fPrice(nearBullOB.low)}–${fPrice(nearBullOB.high)} — wait for price to pull back into this demand zone, then enter on reaction (bullish candle close or wick rejection)`;
+        entryZone=obEntryZone(nearBullOB,price);
+        entryReason=`Bullish Order Block at ${fPrice(nearBullOB.low)}–${fPrice(nearBullOB.high)} — wait for price to pull back into this demand zone (entry body: ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}), then enter on reaction (bullish candle close or wick rejection)`;
         entryType='OB';
       } else if(nearBullFVG){
         entryZone={low:nearBullFVG.bot,high:nearBullFVG.top,mid:(nearBullFVG.bot+nearBullFVG.top)/2};
@@ -2469,12 +2506,12 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       const nearBearOB=bearOBsNear.sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       const nearBearFVG=[...fvgs].filter(f=>f.type==='BEAR_FVG'&&f.fillStatus!=='FILLED'&&f.distPct<3&&f.distPct>-1).sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       if(insideOB){
-        entryZone={low:insideOB.low,high:insideOB.high,mid:(insideOB.low+insideOB.high)/2};
-        entryReason=`Price is currently INSIDE a Bearish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — institutional supply zone active right now`;
+        entryZone=obEntryZone(insideOB,price);
+        entryReason=`Price is currently INSIDE a Bearish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — entry zone tightened to body ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}`;
         entryType='OB_INSIDE';
       } else if(nearBearOB){
-        entryZone={low:nearBearOB.low,high:nearBearOB.high,mid:(nearBearOB.low+nearBearOB.high)/2};
-        entryReason=`Bearish Order Block at ${fPrice(nearBearOB.low)}–${fPrice(nearBearOB.high)} — wait for price to rally into this supply zone, then enter on reaction (bearish candle close or wick rejection)`;
+        entryZone=obEntryZone(nearBearOB,price);
+        entryReason=`Bearish Order Block at ${fPrice(nearBearOB.low)}–${fPrice(nearBearOB.high)} — wait for price to rally into this supply zone (entry body: ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}), then enter on reaction (bearish candle close or wick rejection)`;
         entryType='OB';
       } else if(nearBearFVG){
         entryZone={low:nearBearFVG.bot,high:nearBearFVG.top,mid:(nearBearFVG.bot+nearBearFVG.top)/2};
