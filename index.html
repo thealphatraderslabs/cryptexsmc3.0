@@ -4450,8 +4450,8 @@ function renderSmcMarketCards() {
   const s = STATE.smcMarketSort || 'score';
 
   // Filter
-  if (f === 'long')     data = data.filter(d => d.direction === 'LONG');
-  else if (f === 'short')  data = data.filter(d => d.direction === 'SHORT');
+  if (f === 'long')     data = data.filter(d => d.direction === 'LONG'  && d.grade !== 'WATCH' && d.grade !== 'CONFLICT');
+  else if (f === 'short')  data = data.filter(d => d.direction === 'SHORT' && d.grade !== 'WATCH' && d.grade !== 'CONFLICT');
   else if (f === 'watch')  data = data.filter(d => d.grade === 'WATCH');
   else if (f === 'elite')  data = data.filter(d => d.grade === 'ELITE');
 
