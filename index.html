@@ -2273,36 +2273,34 @@ function validateLevels(candles, currentPrice, obs, fvgs, eqhEql, pivots) {
 }
 
 /**
- * obEntryZone: given an OB, returns a tight, tradeable entry zone.
+ * compressEntryZone: returns a tight, tradeable entry zone from any SMC level.
  *
- * Priority:
- *  1. If the OB has body bounds (bodyHigh/bodyLow) AND the body is ≤15% wide,
- *     use the body. Bodies represent where institutions actually transacted —
- *     not the wicks.
- *  2. If the body is still >15% wide (rare on higher TFs), or body data is
- *     missing, cap the zone to ±7.5% around the OB midpoint so the rendered
- *     zone is always a meaningful, actionable range.
+ * For ORDER BLOCKS — prefers body (open/close) bounds over wick extremes.
+ * For FVGs and other levels — uses the raw low/high passed in directly.
  *
- * The MAX_ENTRY_ZONE_PCT constant (15%) is the absolute ceiling. Any entry
- * zone wider than this as a % of its own midprice is compressed.
+ * Hard cap: MAX_ENTRY_ZONE_PCT (15%). Any zone wider than this as a % of its
+ * own midprice is compressed symmetrically around the mid so it's always
+ * a meaningful, actionable range regardless of timeframe.
  */
-function obEntryZone(ob, currentPrice) {
-  const MAX_ENTRY_ZONE_PCT = 0.15; // 15% of mid — zones wider than this are too big to trade
+const MAX_ENTRY_ZONE_PCT = 0.15;
 
-  // Prefer body boundaries when available
-  let zoneLow  = (ob.bodyLow  !== undefined) ? ob.bodyLow  : ob.low;
-  let zoneHigh = (ob.bodyHigh !== undefined) ? ob.bodyHigh : ob.high;
-  const mid    = (zoneLow + zoneHigh) / 2;
-
-  // If the zone width is still above cap, compress symmetrically around mid
-  const width = zoneHigh - zoneLow;
-  if (mid > 0 && width / mid > MAX_ENTRY_ZONE_PCT) {
+function compressEntryZone(zoneLow, zoneHigh) {
+  let low  = zoneLow;
+  let high = zoneHigh;
+  const mid = (low + high) / 2;
+  if (mid > 0 && (high - low) / mid > MAX_ENTRY_ZONE_PCT) {
     const halfCap = mid * (MAX_ENTRY_ZONE_PCT / 2);
-    zoneLow  = mid - halfCap;
-    zoneHigh = mid + halfCap;
+    low  = mid - halfCap;
+    high = mid + halfCap;
   }
+  return { low, high, mid: (low + high) / 2 };
+}
 
-  return { low: zoneLow, high: zoneHigh, mid: (zoneLow + zoneHigh) / 2 };
+function obEntryZone(ob) {
+  // Prefer body boundaries (where institutions actually transacted) over wick extremes
+  const bodyLow  = ob.bodyLow  !== undefined ? ob.bodyLow  : ob.low;
+  const bodyHigh = ob.bodyHigh !== undefined ? ob.bodyHigh : ob.high;
+  return compressEntryZone(bodyLow, bodyHigh);
 }
 
 /**
@@ -2469,16 +2467,16 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       const nearBullOB=bullOBsNear.sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       const nearBullFVG=[...fvgs].filter(f=>f.type==='BULL_FVG'&&f.fillStatus!=='FILLED'&&f.distPct>-3&&f.distPct<1).sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       if(insideOB){
-        entryZone=obEntryZone(insideOB,price);
+        entryZone=obEntryZone(insideOB);
         entryReason=`Price is currently INSIDE a Bullish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — entry zone tightened to body ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}`;
         entryType='OB_INSIDE';
       } else if(nearBullOB){
-        entryZone=obEntryZone(nearBullOB,price);
+        entryZone=obEntryZone(nearBullOB);
         entryReason=`Bullish Order Block at ${fPrice(nearBullOB.low)}–${fPrice(nearBullOB.high)} — wait for price to pull back into this demand zone (entry body: ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}), then enter on reaction (bullish candle close or wick rejection)`;
         entryType='OB';
       } else if(nearBullFVG){
-        entryZone={low:nearBullFVG.bot,high:nearBullFVG.top,mid:(nearBullFVG.bot+nearBullFVG.top)/2};
-        entryReason=`Bullish FVG imbalance (${fPrice(nearBullFVG.bot)}–${fPrice(nearBullFVG.top)}) — price returning to fill the gap is a high-probability entry`;
+        entryZone=compressEntryZone(nearBullFVG.bot,nearBullFVG.top);
+        entryReason=`Bullish FVG imbalance (${fPrice(nearBullFVG.bot)}–${fPrice(nearBullFVG.top)}) — entry zone compressed to ${fPrice(entryZone.low)}–${fPrice(entryZone.high)} (mid of gap). Price returning to fill is a high-probability entry.`;
         entryType='FVG';
       } else if(extStruct.lastHL){
         const hl=extStruct.lastHL;
@@ -2506,16 +2504,16 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       const nearBearOB=bearOBsNear.sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       const nearBearFVG=[...fvgs].filter(f=>f.type==='BEAR_FVG'&&f.fillStatus!=='FILLED'&&f.distPct<3&&f.distPct>-1).sort((a,b)=>Math.abs(a.distPct)-Math.abs(b.distPct))[0];
       if(insideOB){
-        entryZone=obEntryZone(insideOB,price);
+        entryZone=obEntryZone(insideOB);
         entryReason=`Price is currently INSIDE a Bearish OB (${fPrice(insideOB.low)}–${fPrice(insideOB.high)}) — entry zone tightened to body ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}`;
         entryType='OB_INSIDE';
       } else if(nearBearOB){
-        entryZone=obEntryZone(nearBearOB,price);
+        entryZone=obEntryZone(nearBearOB);
         entryReason=`Bearish Order Block at ${fPrice(nearBearOB.low)}–${fPrice(nearBearOB.high)} — wait for price to rally into this supply zone (entry body: ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}), then enter on reaction (bearish candle close or wick rejection)`;
         entryType='OB';
       } else if(nearBearFVG){
-        entryZone={low:nearBearFVG.bot,high:nearBearFVG.top,mid:(nearBearFVG.bot+nearBearFVG.top)/2};
-        entryReason=`Bearish FVG imbalance (${fPrice(nearBearFVG.bot)}–${fPrice(nearBearFVG.top)}) — price returning to fill the gap is a high-probability short entry`;
+        entryZone=compressEntryZone(nearBearFVG.bot,nearBearFVG.top);
+        entryReason=`Bearish FVG imbalance (${fPrice(nearBearFVG.bot)}–${fPrice(nearBearFVG.top)}) — entry zone compressed to ${fPrice(entryZone.low)}–${fPrice(entryZone.high)} (mid of gap). Price returning to fill is a high-probability short entry.`;
         entryType='FVG';
       } else if(extStruct.lastLH){
         const lh=extStruct.lastLH;
