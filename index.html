@@ -4750,31 +4750,6 @@ function drawChart(canvas, candles, levels, opts={}) {
     ctx.globalAlpha = 1;
   });
 
-  // ── SWING POINT DOTS — drawn above candles ──
-  const dotR = Math.max(2.5, Math.min(4, candleW * 0.5));
-  const DOT_GAP = 5; // px gap between wick tip and dot
-  candles.forEach((c, i) => {
-    const x = cx(i);
-    if(swingHighIdx.has(i)) {
-      const dotY = py(c.h) - DOT_GAP - dotR;
-      ctx.beginPath();
-      ctx.arc(x, dotY, dotR, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(255,61,87,0.9)';
-      ctx.globalAlpha = 0.85;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    if(swingLowIdx.has(i)) {
-      const dotY = py(c.l) + DOT_GAP + dotR;
-      ctx.beginPath();
-      ctx.arc(x, dotY, dotR, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(0,230,118,0.9)';
-      ctx.globalAlpha = 0.85;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-  });
-
   // ── LINE LEVELS ──
   // Build a list of lines that are in view, then draw them
   // Labels: collision-detected on right side with 13px minimum gap
