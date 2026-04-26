@@ -2538,51 +2538,53 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
     }
     const entryPrice=entryZone.mid;
 
-    // ── STEP 3: STOP LOSS — always the nearest SMC invalidation level ──
-    // LONG SL: the nearest SMC support level BELOW the entry zone low
-    // SHORT SL: the nearest SMC resistance level ABOVE the entry zone high
-    // We pick the first meaningful level that, if broken, structurally kills the trade
+    // ── STEP 3: STOP LOSS — nearest SMC invalidation level within a reasonable distance ──
+    // MAX_SL_PCT: hard cap on how far the SL can be from entry price.
+    // A stop 44% away is not a stop — it's a liquidation. Cap at 15%.
+    // Within the cap: highest structural priority wins. Outside the cap: skipped entirely.
+    // If NOTHING qualifies within 15%, fall back to the entry zone floor (tight mechanical SL)
+    // and show a clear warning that no clean structural SL exists on this TF.
+    const MAX_SL_PCT = 0.15; // 15% from entry — absolute ceiling for any stop loss
     let slPrice=null, slReason='', slType='';
 
     if(isLong){
-      // Candidates below entry: HL (key support), LL (if broken = structure dead), OB low, FVG bottom, range low
-      // Priority: nearest bearish OB below entry > last HL > last LL > range low
       const slCandidates=[];
-      // Last HL — most important: if broken, uptrend is over
       if(extStruct.lastHL&&extStruct.lastHL.price<entryZone.low){
         slCandidates.push({price:extStruct.lastHL.price*0.998,label:'Last HL',reason:`Candle CLOSE below Last Higher Low (${fPrice(extStruct.lastHL.price)}) — this destroys the Higher Low structure, confirming bearish takeover. The uptrend is structurally invalid.`,priority:10});
       }
-      // Nearest bull OB low below entry (acts as the floor of the demand zone)
       const nearOBBelow=obs.filter(o=>!o.mitigated&&o.type==='BULL_OB'&&o.low<entryZone.low).sort((a,b)=>b.low-a.low)[0];
       if(nearOBBelow){
         slCandidates.push({price:nearOBBelow.low*0.998,label:'Bull OB Low',reason:`Candle CLOSE below Bullish OB low (${fPrice(nearOBBelow.low)}) — order block fully mitigated from below, demand zone has failed`,priority:8});
       }
-      // BOS level — if price closes below the last BOS level, the BOS is invalidated
       const lastBullBOS=extStruct.events.slice().reverse().find(e=>e.type==='BOS'&&e.dir==='BULLISH');
       if(lastBullBOS&&lastBullBOS.price<entryZone.low){
         slCandidates.push({price:lastBullBOS.price*0.998,label:'BOS Level',reason:`Candle CLOSE below last Bullish BOS level (${fPrice(lastBullBOS.price)}) — the structural break that confirmed this uptrend is negated`,priority:7});
       }
-      // EQL (sell-side liquidity) below entry — sweeping this and closing below = bearish
       const nearEQL=allSmcLevels.filter(l=>l.type==='EQL'&&l.price<entryZone.low).sort((a,b)=>b.price-a.price)[0];
       if(nearEQL){
         slCandidates.push({price:nearEQL.price*0.998,label:'EQL (SSL)',reason:`Candle CLOSE below Equal Lows at ${fPrice(nearEQL.price)} — sell-side liquidity swept and rejected, bearish continuation expected`,priority:6});
       }
-      // Last LL as absolute worst-case
       if(extStruct.lastLL&&extStruct.lastLL.price<entryZone.low){
         slCandidates.push({price:extStruct.lastLL.price*0.997,label:'Last LL',reason:`Candle CLOSE below Last Lower Low (${fPrice(extStruct.lastLL.price)}) — structural breakdown, new lows being made`,priority:5});
       }
-      // Range low absolute floor
       if(pd&&pd.swingLow<entryZone.low){
         slCandidates.push({price:pd.swingLow*0.997,label:'Range Low',reason:`Candle CLOSE below swing Range Low (${fPrice(pd.swingLow)}) — full discount zone breached`,priority:4});
       }
 
-      if(slCandidates.length){
-        // Pick highest priority, then among same priority pick the one closest to entry (tighter SL = less account risk)
-        slCandidates.sort((a,b)=>b.priority-a.priority||(b.price-a.price));
-        const best=slCandidates[0];
+      // Filter: only candidates within MAX_SL_PCT of entry
+      const validSL=slCandidates.filter(c=>Math.abs(entryPrice-c.price)/entryPrice<=MAX_SL_PCT);
+
+      if(validSL.length){
+        // Among valid candidates: highest priority wins; ties broken by closest to entry (tightest SL)
+        validSL.sort((a,b)=>b.priority-a.priority||(b.price-a.price));
+        const best=validSL[0];
         slPrice=best.price; slReason=best.reason; slType=best.label;
+      } else if(slCandidates.length){
+        // All structural levels are beyond the 15% cap — use entry zone floor as mechanical SL
+        slPrice=entryZone.low*0.995;
+        slReason=`No structural invalidation level within 15% of entry (nearest: ${slCandidates[0].label} at ${fPrice(slCandidates[0].price)}, ${(Math.abs(entryPrice-slCandidates[0].price)/entryPrice*100).toFixed(1)}% away). Using entry zone floor as tight mechanical SL — consider a lower timeframe for a cleaner structural stop.`;
+        slType='ENTRY_FLOOR';
       } else {
-        // Absolute fallback: use the OB low if we're in an OB, else nearest swing low below price
         slPrice=entryZone.low*0.995;
         slReason=`Below entry zone low (${fPrice(entryZone.low)}) — no distinct SMC invalidation level found below, using OB/entry zone bottom as floor`;
         slType='ENTRY_FLOOR';
@@ -2611,10 +2613,18 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       if(pd&&pd.swingHigh>entryZone.high){
         slCandidates.push({price:pd.swingHigh*1.003,label:'Range High',reason:`Candle CLOSE above swing Range High (${fPrice(pd.swingHigh)}) — full premium zone breached`,priority:4});
       }
-      if(slCandidates.length){
-        slCandidates.sort((a,b)=>b.priority-a.priority||(a.price-b.price));
-        const best=slCandidates[0];
+
+      // Filter: only candidates within MAX_SL_PCT of entry
+      const validSL=slCandidates.filter(c=>Math.abs(c.price-entryPrice)/entryPrice<=MAX_SL_PCT);
+
+      if(validSL.length){
+        validSL.sort((a,b)=>b.priority-a.priority||(a.price-b.price));
+        const best=validSL[0];
         slPrice=best.price; slReason=best.reason; slType=best.label;
+      } else if(slCandidates.length){
+        slPrice=entryZone.high*1.005;
+        slReason=`No structural invalidation level within 15% of entry (nearest: ${slCandidates[0].label} at ${fPrice(slCandidates[0].price)}, ${(Math.abs(slCandidates[0].price-entryPrice)/entryPrice*100).toFixed(1)}% away). Using entry zone ceiling as tight mechanical SL — consider a lower timeframe for a cleaner structural stop.`;
+        slType='ENTRY_CEILING';
       } else {
         slPrice=entryZone.high*1.005;
         slReason=`Above entry zone high (${fPrice(entryZone.high)}) — no distinct SMC invalidation level found above, using OB/entry zone top as ceiling`;
