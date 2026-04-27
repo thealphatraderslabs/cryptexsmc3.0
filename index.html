@@ -2773,37 +2773,39 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
       biasLines.push(`${t} is in a downtrend on the ${tfu} chart — it has been making lower lows and lower highs, meaning sellers are in control. The overall direction is down.`);
     }
 
-    // Line 2 — Where price is right now (premium/discount in plain terms)
+    // Line 2 — Where price is right now (premium/discount with actual levels)
     if(pd){
       if(pd.zone==='DISCOUNT'){
-        biasLines.push(`Right now price is sitting in a relatively cheap area — it has pulled back from recent highs and is near the lower end of its recent trading range. This is a good location to look for longs.`);
+        biasLines.push(`Right now price at ${fPrice(price)} is sitting in the lower end of its recent range (${fPrice(pd.swingLow)} – ${fPrice(pd.swingHigh)}), about ${pd.pct.toFixed(0)}% of the way up. This is a relatively cheap area — a good location to look for long entries.`);
       } else if(pd.zone==='PREMIUM'){
-        biasLines.push(`Right now price has pushed up into an expensive area — it is near the top of its recent trading range where selling pressure tends to appear. This is not the ideal place to chase a long entry.`);
+        biasLines.push(`Right now price at ${fPrice(price)} has pushed up into the upper end of its recent range (${fPrice(pd.swingLow)} – ${fPrice(pd.swingHigh)}), about ${pd.pct.toFixed(0)}% of the way up. This is an expensive area where selling pressure tends to appear — not ideal for chasing a long entry.`);
       } else {
-        biasLines.push(`Price is currently in the middle of its recent range — not cheap enough to be a great buy, not expensive enough to be a great short. A bit more patience for a cleaner location will improve the trade.`);
+        biasLines.push(`Right now price at ${fPrice(price)} is sitting in the middle of its recent range (${fPrice(pd.swingLow)} – ${fPrice(pd.swingHigh)}), about ${pd.pct.toFixed(0)}% of the way up. This is a neutral zone — not cheap enough to be a great buy, not expensive enough to be a great short.`);
       }
     }
 
-    // Line 3 — Internal structure context (what is happening short-term)
+    // Line 3 — Internal structure context with price levels
     if(intStruct&&intStruct.bias!==extStruct.bias){
       if(extStruct.bias==='BULLISH'){
-        biasLines.push(`On the shorter timeframe, price is currently pulling back or selling off a little — this is actually normal and healthy in an uptrend. This pullback is what creates the opportunity to get in at a better price before the next leg up.`);
+        const supportRef = extStruct.lastHL ? ` Watch for price to hold above ${fPrice(extStruct.lastHL.price)} and turn back up.` : '';
+        biasLines.push(`On the shorter timeframe, price is currently pulling back — this is normal and healthy in an uptrend. This pullback is what creates the opportunity to get in at a better price before the next leg up.${supportRef}`);
       } else {
-        biasLines.push(`On the shorter timeframe, price is bouncing up a little — this is a normal pullback within the downtrend. This bounce is what creates the opportunity to get in at a better price before the next leg down.`);
+        const resistRef = extStruct.lastLH ? ` Watch for price to get rejected below ${fPrice(extStruct.lastLH.price)} and turn back down.` : '';
+        biasLines.push(`On the shorter timeframe, price is bouncing up — this is a normal pullback within the downtrend. This bounce creates the opportunity to get in at a better price before the next leg down.${resistRef}`);
       }
     } else if(intStruct&&intStruct.bias===extStruct.bias){
-      biasLines.push(`Both the big picture and the short-term charts are pointing in the same direction — this means momentum is strong and the trend is moving with conviction right now.`);
+      biasLines.push(`Both the big picture and the short-term charts are pointing in the same direction — momentum is strong and the trend is moving with conviction right now.`);
     }
 
-    // Line 4 — What exactly to watch for (entry context)
+    // Line 4 — Entry context with specific price levels
     if(entryType==='OB_INSIDE'){
-      biasLines.push(`Price is currently sitting right inside a key demand zone where big buyers previously stepped in. This is an active setup — watch for a green candle closing back up from this zone as your confirmation to enter.`);
+      biasLines.push(`Price is currently sitting right inside the demand zone at ${fPrice(entryZone.low)}–${fPrice(entryZone.high)}. This is an active setup — watch for a green candle closing back upward from this zone as your confirmation to enter.`);
     } else if(entryType==='OB'){
-      biasLines.push(`There is a demand zone below current price where big buyers previously stepped in. The ideal entry is to wait for price to pull back into that zone, then watch for a bullish reaction candle — that reaction is your green light.`);
+      biasLines.push(`There is a demand zone at ${fPrice(entryZone.low)}–${fPrice(entryZone.high)} below current price. Wait for price to pull back into that zone, then watch for a green candle closing back upward — that is your entry signal.`);
     } else if(entryType==='FVG'){
-      biasLines.push(`There is a price gap (imbalance) below current price that the market has not revisited yet. Price has a tendency to come back and fill these gaps. Waiting for price to dip into that gap and show a bounce is the cleanest entry.`);
+      biasLines.push(`There is a price gap at ${fPrice(entryZone.low)}–${fPrice(entryZone.high)} that price has not revisited yet. Wait for price to dip into that gap and show a bounce — the bounce is your entry signal.`);
     } else if(entryType==='MARKET'){
-      biasLines.push(`There is no clean pullback level nearby on this timeframe. If you want to enter, you would be chasing price at current levels — consider waiting for a dip or switching to a shorter timeframe to find a more precise entry zone.`);
+      biasLines.push(`There is no clean pullback level close to current price (${fPrice(price)}). If you enter here you are chasing price on momentum. Wait for a bullish candle to close first, and use a smaller position size.`);
     }
 
     tradePlan={
@@ -2826,7 +2828,12 @@ function buildConfluence(extStruct, intStruct, pd, currentPrice, obs, fvgs, tick
     };
   }
 
-  return {direction,idea,signals,bullScore,bearScore,tradePlan};
+  return {direction,idea,signals,bullScore,bearScore,tradePlan,
+    // raw data passed through so renderConfluence can build price-aware narratives
+    _price:price, _ticker:ticker, _tf:tf,
+    _extStruct:extStruct, _intStruct:intStruct, _pd:pd,
+    _obs:obs, _fvgs:fvgs,
+  };
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -3306,77 +3313,107 @@ function renderConfluence(confluence) {
     const isWatch=dir==='WATCH_LONG'||dir==='WATCH_SHORT';
     const isWatchLong=dir==='WATCH_LONG';
     const isWatchShort=dir==='WATCH_SHORT';
-    const isNeutral=dir==='NEUTRAL';
 
-    // Build a mentor-voice narrative based on what the data actually says
-    const t=confluence.tradePlan?.ticker||'This coin';
-    const extBias=confluence._extBias||'';
-    const intBias=confluence._intBias||'';
-    const pdZone=confluence._pdZone||'';
-    const pdPct=confluence._pdPct!=null?confluence._pdPct.toFixed(1):null;
+    // Pull raw data objects passed through from buildConfluence
+    const cp   = confluence._price;
+    const pd   = confluence._pd;
+    const obs  = confluence._obs   || [];
+    const fvgs = confluence._fvgs  || [];
+    const extStruct = confluence._extStruct;
+    const intStruct = confluence._intStruct;
+    const ticker = confluence._ticker || 'This coin';
+    const tfu    = (confluence._tf || '').toUpperCase();
 
-    // Paragraph 1 — What is the situation
-    let situationText='';
-    if(isWatchLong){
-      situationText=`The overall trend is leaning bullish — there are some positive signs in the market structure. However, the signals are not strong enough yet to justify entering a trade right now. The setup is building, not ready.`;
-    } else if(isWatchShort){
-      situationText=`The overall trend is leaning bearish — there are some negative signs in the market structure. However, the signals are not strong enough yet to justify entering a short trade right now. The setup is building, not ready.`;
-    } else {
-      // NEUTRAL — figure out WHY from the signals
-      const hasBullExt=confluence.signals.some(s=>s.txt.includes('BULLISH')&&s.cls==='c-bull');
-      const hasBearExt=confluence.signals.some(s=>s.txt.includes('BEARISH')&&s.cls==='c-bear');
-      const isPremium=confluence.signals.some(s=>s.txt.includes('PREMIUM'));
-      const isDiscount=confluence.signals.some(s=>s.txt.includes('DISCOUNT'));
+    // ── helpers ──
+    const nearestBullOB = obs.filter(o=>!o.mitigated&&o.type==='BULL_OB'&&o.low<cp)
+                             .sort((a,b)=>b.low-a.low)[0];
+    const nearestBearOB = obs.filter(o=>!o.mitigated&&o.type==='BEAR_OB'&&o.high>cp)
+                             .sort((a,b)=>a.high-b.high)[0];
+    const nearestBullFVG = fvgs.filter(f=>f.type==='BULL_FVG'&&f.fillStatus!=='FILLED'&&f.bot<cp)
+                               .sort((a,b)=>b.bot-a.bot)[0];
+    const nearestBearFVG = fvgs.filter(f=>f.type==='BEAR_FVG'&&f.fillStatus!=='FILLED'&&f.top>cp)
+                               .sort((a,b)=>a.top-b.top)[0];
+    const lastHL  = extStruct?.lastHL;
+    const lastLH  = extStruct?.lastLH;
+    const lastHH  = extStruct?.lastHH;
+    const lastLL  = extStruct?.lastLL;
+    const extBias = extStruct?.bias || 'RANGING';
+    const intBias = intStruct?.bias || '';
 
-      if(hasBullExt&&isPremium){
-        situationText=`The trend is bullish — buyers have been in control and the structure is pointing up. BUT right now price has pushed up into an expensive area near the top of its recent range. This is not a good place to buy — you would be buying at a high price with limited room to go higher before hitting resistance.`;
-      } else if(hasBearExt&&isDiscount){
-        situationText=`The trend is bearish — sellers have been in control and the structure is pointing down. BUT right now price has dropped into a cheap area near the bottom of its recent range. This is not a good place to short — you would be selling at a low price with limited room to go lower before hitting support.`;
-      } else if(hasBullExt&&hasBearExt){
-        situationText=`The market is sending mixed signals right now — some indicators point bullish and others point bearish. When signals conflict like this, the right move is to stay out. A confused market is a dangerous market to trade.`;
+    // ── PARAGRAPH 1: What is happening right now ──
+    let situationText = '';
+    if(pd){
+      const rangeStr = `(range: ${fPrice(pd.swingLow)} – ${fPrice(pd.swingHigh)})`;
+      if(extBias==='BULLISH' && pd.zone==='PREMIUM'){
+        situationText = `${ticker} is in an uptrend on the ${tfu} — buyers have been in control, making higher highs and higher lows. BUT right now price is at ${fPrice(cp)}, which is in the upper ${(100-pd.pct).toFixed(0)}% of its recent range ${rangeStr}. This is an expensive area — you would be buying near resistance where sellers tend to step in. This is not the right moment to enter a long.`;
+      } else if(extBias==='BEARISH' && pd.zone==='DISCOUNT'){
+        situationText = `${ticker} is in a downtrend on the ${tfu} — sellers have been in control, making lower lows and lower highs. BUT right now price is at ${fPrice(cp)}, which is in the lower ${pd.pct.toFixed(0)}% of its recent range ${rangeStr}. This is a cheap area — shorting here means selling near support where buyers tend to step in. This is not the right moment to enter a short.`;
+      } else if(extBias==='BULLISH' && pd.zone==='DISCOUNT'){
+        situationText = `${ticker} is in an uptrend on the ${tfu} and price at ${fPrice(cp)} is in a cheap area of its range ${rangeStr} — this is actually a good location for longs. However, the setup signals are not fully aligned yet. A few more confirming factors are needed before pulling the trigger.`;
+      } else if(extBias==='BEARISH' && pd.zone==='PREMIUM'){
+        situationText = `${ticker} is in a downtrend on the ${tfu} and price at ${fPrice(cp)} is in an expensive area of its range ${rangeStr} — this is a good location for shorts. However, the setup signals are not fully aligned yet. A few more confirming factors are needed before entering a short.`;
       } else {
-        situationText=`There is no clear directional setup right now. The market is either ranging, or the signals are conflicting. The right move here is to wait — do not force a trade when the market isn't giving you a clear opportunity.`;
+        situationText = `${ticker} is at ${fPrice(cp)}, sitting in the middle of its recent range ${rangeStr}. The signals are conflicting — neither clearly bullish nor clearly bearish right now. The market is in a neutral zone and needs to pick a direction.`;
+      }
+    } else {
+      if(extBias==='BULLISH'){
+        situationText = `${ticker} is in an uptrend on the ${tfu} — buyers have been in control. However, current price (${fPrice(cp)}) does not have enough confluence signals stacking up to justify entering right now. The setup is not complete yet.`;
+      } else if(extBias==='BEARISH'){
+        situationText = `${ticker} is in a downtrend on the ${tfu} — sellers have been in control. However, current price (${fPrice(cp)}) does not have enough confluence signals stacking up to justify a short entry right now. The setup is not complete yet.`;
+      } else {
+        situationText = `${ticker} at ${fPrice(cp)} does not have a clear directional trend right now. The market is ranging and the signals are mixed. Stay out until a clear direction forms.`;
       }
     }
 
-    // Paragraph 2 — What you are waiting for
-    let waitingText='';
-    const nearBullOBSignal=confluence.signals.find(s=>s.txt.includes('Bullish OB')&&s.cls==='c-bull');
-    const nearBearOBSignal=confluence.signals.find(s=>s.txt.includes('Bearish OB')&&s.cls==='c-bear');
-    const nearBullFVG=confluence.signals.find(s=>s.txt.includes('Bullish FVG')&&s.cls==='c-bull');
-    const nearBearFVG=confluence.signals.find(s=>s.txt.includes('Bearish FVG')&&s.cls==='c-bear');
-    const isPullback=confluence.signals.some(s=>s.txt.includes('pullback'));
-    const isPremiumSignal=confluence.signals.some(s=>s.txt.includes('PREMIUM'));
-    const isDiscountSignal=confluence.signals.some(s=>s.txt.includes('DISCOUNT'));
+    // ── PARAGRAPH 2: What you are waiting for — with specific price levels ──
+    let waitingText = '';
+    const isBullishSituation = extBias==='BULLISH' || isWatchLong;
+    const isBearishSituation = extBias==='BEARISH' || isWatchShort;
 
-    if(isWatchLong||confluence.bullScore>confluence.bearScore){
-      if(isPremiumSignal){
-        waitingText=`What you are waiting for: Price needs to pull back down from this expensive area. Look for it to come down to a demand zone or a price gap below, show a bounce there, and then you have your entry signal. Patience here protects your capital.`;
-      } else if(isPullback){
-        waitingText=`What you are waiting for: Price is currently pulling back inside the uptrend. You need to see this pullback end — specifically, watch for a green candle closing back upward from a support area. That green candle is your signal that the pullback is over and the uptrend is resuming.`;
-      } else if(nearBullOBSignal||nearBullFVG){
-        waitingText=`What you are waiting for: There are demand zones nearby. Watch for price to reach those zones and show a reaction — a green candle bouncing off the zone. That reaction is your entry signal.`;
+    if(isBullishSituation){
+      const levelParts = [];
+      if(nearestBullOB)  levelParts.push(`the demand zone at ${fPrice(nearestBullOB.low)}–${fPrice(nearestBullOB.high)}`);
+      if(nearestBullFVG) levelParts.push(`the price gap at ${fPrice(nearestBullFVG.bot)}–${fPrice(nearestBullFVG.top)}`);
+      if(!levelParts.length && lastHL) levelParts.push(`the last key support at ${fPrice(lastHL.price)}`);
+
+      if(pd && pd.zone==='PREMIUM' && levelParts.length){
+        waitingText = `What you are waiting for: Price to pull back from ${fPrice(cp)} down to ${levelParts[0]}. Once price reaches that zone, watch for a green candle closing back upward — that candle is your confirmation to enter long. Do not enter before the pullback happens.`;
+      } else if(intBias==='BEARISH' && extBias==='BULLISH'){
+        const zlevel = levelParts.length ? ` Watch for price to hold above ${levelParts[0]} and then close a green candle back upward.` : ` Watch for a green candle closing upward to signal the pullback is over.`;
+        waitingText = `What you are waiting for: This short-term pullback to end. Price is currently dipping down inside the bigger uptrend.${zlevel} That green candle is your entry signal.`;
+      } else if(levelParts.length){
+        waitingText = `What you are waiting for: Price to reach ${levelParts[0]} and show a reaction there. Look for a green candle bouncing off that level — that bounce is your entry signal.`;
       } else {
-        waitingText=`What you are waiting for: More bullish signals to stack up. Specifically — price pulling back to a cheaper area, and then showing a clear bullish reaction candle. Until then, observe and wait.`;
+        waitingText = `What you are waiting for: A clear pullback to a cheaper level, followed by a green candle closing back upward. Until price comes back to a proper support area, there is no clean entry.`;
       }
-    } else if(isWatchShort||confluence.bearScore>confluence.bullScore){
-      if(isDiscountSignal){
-        waitingText=`What you are waiting for: Price needs to bounce back up from this cheap area. Look for it to rally up to a supply zone or a price gap above, show a rejection there, and then you have your short entry signal. Patience here protects your capital.`;
-      } else if(isPullback){
-        waitingText=`What you are waiting for: Price is currently bouncing inside the downtrend. You need to see this bounce end — specifically, watch for a red candle closing back downward from a resistance area. That red candle is your signal that the bounce is over and the downtrend is resuming.`;
-      } else if(nearBearOBSignal||nearBearFVG){
-        waitingText=`What you are waiting for: There are supply zones nearby overhead. Watch for price to reach those zones and show a rejection — a red candle turning down from the zone. That rejection is your short entry signal.`;
+      if(lastHH) waitingText += ` The major resistance overhead is at ${fPrice(lastHH.price)} — that is a potential take profit zone once you are in.`;
+
+    } else if(isBearishSituation){
+      const levelParts = [];
+      if(nearestBearOB)  levelParts.push(`the supply zone at ${fPrice(nearestBearOB.low)}–${fPrice(nearestBearOB.high)}`);
+      if(nearestBearFVG) levelParts.push(`the price gap at ${fPrice(nearestBearFVG.bot)}–${fPrice(nearestBearFVG.top)}`);
+      if(!levelParts.length && lastLH) levelParts.push(`the last key resistance at ${fPrice(lastLH.price)}`);
+
+      if(pd && pd.zone==='DISCOUNT' && levelParts.length){
+        waitingText = `What you are waiting for: Price to bounce up from ${fPrice(cp)} to ${levelParts[0]}. Once price reaches that zone, watch for a red candle closing back downward — that candle is your confirmation to enter short. Do not enter before the bounce happens.`;
+      } else if(intBias==='BULLISH' && extBias==='BEARISH'){
+        const zlevel = levelParts.length ? ` Watch for price to get rejected from ${levelParts[0]} and then close a red candle downward.` : ` Watch for a red candle closing downward to signal the bounce is over.`;
+        waitingText = `What you are waiting for: This short-term bounce to end. Price is currently bouncing up inside the bigger downtrend.${zlevel} That red candle is your short entry signal.`;
+      } else if(levelParts.length){
+        waitingText = `What you are waiting for: Price to reach ${levelParts[0]} and show a rejection there. Look for a red candle turning down from that level — that rejection is your short entry signal.`;
       } else {
-        waitingText=`What you are waiting for: More bearish signals to stack up. Specifically — price bouncing up to a more expensive area, and then showing a clear bearish rejection candle. Until then, observe and wait.`;
+        waitingText = `What you are waiting for: A clear bounce to a more expensive level, followed by a red candle closing back downward. Until price comes back to a proper resistance area, there is no clean short entry.`;
       }
+      if(lastLL) waitingText += ` The major support below is at ${fPrice(lastLL.price)} — that is a potential take profit zone once you are in.`;
+
     } else {
-      waitingText=`What you are waiting for: A clearer direction to emerge. Switch to a shorter timeframe (like 1H or 4H) to see if the picture is clearer there. Do not enter on this timeframe until the signals align.`;
+      waitingText = `What you are waiting for: A clear trend to form. Switch to a shorter timeframe (1H or 4H) to see if the picture is clearer. Do not enter on this timeframe until signals align in one direction.`;
     }
 
-    // Paragraph 3 — Mindset / what to do right now
+    // ── PARAGRAPH 3: What to do right now ──
     const actionText = isWatch
-      ? `What to do right now: Add this coin to your watchlist. Check back after the next few candles close to see if the missing signals appear. Do not enter yet.`
-      : `What to do right now: Move on and look at other setups. If you come back to this coin later and the signals have aligned, then you can consider a trade. Sitting out is a valid and often profitable decision.`;
+      ? `What to do right now: Add ${ticker} to your watchlist. Check back after the next ${tfu} candle closes to see if the missing pieces appear. Do not enter yet — patience is the edge here.`
+      : `What to do right now: Move on and look at other setups. There is nothing to do with ${ticker} on the ${tfu} at the moment. Come back later when the signals have aligned — the opportunity will still be there.`;
 
     container.innerHTML=`
       <div class="trade-signal-card watch">
@@ -3387,9 +3424,9 @@ function renderConfluence(confluence) {
           </div>
         </div>
         <div class="tsc-body">
-          <div class="tsc-bias-block" style="line-height:1.8;font-size:0.72rem;">
-            <div style="margin-bottom:10px;">${situationText}</div>
-            <div style="margin-bottom:10px;color:var(--accent);">${waitingText}</div>
+          <div class="tsc-bias-block" style="line-height:1.9;font-size:0.72rem;">
+            <div style="margin-bottom:12px;color:var(--text-primary);">${situationText}</div>
+            <div style="margin-bottom:12px;color:var(--accent);">${waitingText}</div>
             <div style="color:var(--orange);">${actionText}</div>
           </div>
           <div class="tsc-signals-row" style="margin-top:12px;">
